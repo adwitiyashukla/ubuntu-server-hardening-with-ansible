@@ -1,0 +1,41 @@
+- name: Create the group that is allowed to log in over SSH
+  ansible.builtin.group:
+    name: "{{ ssh_group }}"
+
+- name: Add the admin user to that group
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    groups: "{{ ssh_group }}"
+    append: true
+
+- name: Write the sshd settings
+  ansible.builtin.template:
+    src: sshd.conf.j2
+    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload ssh
+
+- name: Find the sshd config files and host keys
+  ansible.builtin.find:
+    paths:
+      - /etc/ssh
+      - /etc/ssh/sshd_config.d
+    patterns:
+      - sshd_config
+      - "*.conf"
+      - ssh_host_*_key
+      - ssh_host_*_key.pub
+  register: ssh_files
+
+- name: Fix ownership and mode of the sshd files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "{{ item.path.endswith('.pub') | ternary('0644', '0600') }}"
+  loop: "{{ ssh_files.files }}"
+  loop_control:
+    label: "{{ item.path }}"

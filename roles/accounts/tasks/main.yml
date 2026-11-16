@@ -1,0 +1,265 @@
+- name: Install the password quality module
+  ansible.builtin.apt:
+    name: libpam-pwquality
+    lock_timeout: 600
+
+- name: Set password aging, hashing and umask defaults
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: '^\s*{{ item.key }}\s'
+    line: "{{ item.key }} {{ item.value }}"
+  loop:
+    - { key: PASS_MAX_DAYS, value: "{{ password_max_days }}" }
+    - { key: PASS_MIN_DAYS, value: "{{ password_min_days }}" }
+    - { key: PASS_WARN_AGE, value: "{{ password_warn_days }}" }
+    - { key: ENCRYPT_METHOD, value: YESCRYPT }
+    - { key: UMASK, value: "{{ default_umask }}" }
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Lock new accounts that go unused
+  ansible.builtin.lineinfile:
+    path: /etc/default/useradd
+    regexp: '^\s*#?\s*INACTIVE='
+    line: "INACTIVE={{ password_inactive_days }}"
+
+- name: Read the password database
+  ansible.builtin.getent:
+    database: shadow
+
+- name: Apply password aging to accounts that already have a password
+  ansible.builtin.command:
+    argv:
+      - chage
+      - --mindays
+      - "{{ password_min_days | string }}"
+      - --maxdays
+      - "{{ password_max_days | string }}"
+      - --warndays
+      - "{{ password_warn_days | string }}"
+      - --inactive
+      - "{{ password_inactive_days | string }}"
+      - "{{ item.key }}"
+  loop: "{{ ansible_facts.getent_shadow | dict2items | selectattr('value.0', 'match', '^\\$') }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.value[2:6] != accounts_aging
+  changed_when: true
+  vars:
+    accounts_aging:
+      - "{{ password_min_days | string }}"
+      - "{{ password_max_days | string }}"
+      - "{{ password_warn_days | string }}"
+      - "{{ password_inactive_days | string }}"
+
+- name: Set the password quality rules
+  ansible.builtin.lineinfile:
+    path: /etc/security/pwquality.conf
+    regexp: '^\s*#?\s*{{ item.key }}\s*='
+    line: "{{ item.key }} = {{ item.value }}"
+  loop:
+    - { key: minlen, value: "{{ password_min_length }}" }
+    - { key: minclass, value: "{{ password_min_classes }}" }
+    - { key: dcredit, value: -1 }
+    - { key: ucredit, value: -1 }
+    - { key: lcredit, value: -1 }
+    - { key: ocredit, value: -1 }
+    - { key: maxrepeat, value: "{{ password_max_repeat }}" }
+    - { key: maxsequence, value: "{{ password_max_sequence }}" }
+    - { key: difok, value: "{{ password_diff_chars }}" }
+    - { key: dictcheck, value: 1 }
+    - { key: enforcing, value: 1 }
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Apply the password quality rules to root too
+  ansible.builtin.lineinfile:
+    path: /etc/security/pwquality.conf
+    regexp: '^\s*#?\s*enforce_for_root\s*$'
+    line: enforce_for_root
+
+- name: Set the account lockout rules
+  ansible.builtin.lineinfile:
+    path: /etc/security/faillock.conf
+    regexp: '^\s*#?\s*{{ item.key }}\s*='
+    line: "{{ item.key }} = {{ item.value }}"
+  loop:
+    - { key: deny, value: "{{ faillock_deny }}" }
+    - { key: unlock_time, value: "{{ faillock_unlock_time }}" }
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Add PAM profiles for lockout, password history and no empty passwords
+  ansible.builtin.copy:
+    dest: "/usr/share/pam-configs/{{ item.name }}"
+    content: "{{ item.content }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - name: hardening-faillock
+      content: |
+        Name: Lock accounts after failed logins
+        Default: yes
+        Priority: 0
+        Auth-Type: Primary
+        Auth:
+            [default=die] pam_faillock.so authfail
+    - name: hardening-faillock-notify
+      content: |
+        Name: Check the lockout before a login and clear it after one
+        Default: yes
+        Priority: 1024
+        Auth-Type: Primary
+        Auth:
+            requisite pam_faillock.so preauth
+        Account-Type: Primary
+        Account:
+            required pam_faillock.so
+    - name: hardening-pwhistory
+      content: |
+        Name: Refuse recently used passwords
+        Default: yes
+        Priority: 1023
+        Password-Type: Primary
+        Password:
+            requisite pam_pwhistory.so remember={{ password_remember }} enforce_for_root use_authtok
+    - name: hardening-unix
+      content: |
+        Name: Unix authentication without empty passwords
+        Default: yes
+        Priority: 256
+        Auth-Type: Primary
+        Auth:
+            [success=end default=ignore] pam_unix.so try_first_pass
+        Auth-Initial:
+            [success=end default=ignore] pam_unix.so
+        Account-Type: Primary
+        Account:
+            [success=end new_authtok_reqd=done default=ignore] pam_unix.so
+        Account-Initial:
+            [success=end new_authtok_reqd=done default=ignore] pam_unix.so
+        Session-Type: Additional
+        Session:
+            required pam_unix.so
+        Session-Initial:
+            required pam_unix.so
+        Password-Type: Primary
+        Password:
+            [success=end default=ignore] pam_unix.so obscure use_authtok try_first_pass yescrypt
+        Password-Initial:
+            [success=end default=ignore] pam_unix.so obscure yescrypt
+  loop_control:
+    label: "{{ item.name }}"
+  register: accounts_pam_profiles
+
+- name: Read the active PAM auth stack
+  ansible.builtin.slurp:
+    src: /etc/pam.d/common-auth
+  register: accounts_common_auth
+
+- name: Switch PAM over to the new profiles
+  ansible.builtin.command:
+    cmd: >-
+      pam-auth-update
+      --enable hardening-faillock hardening-faillock-notify hardening-pwhistory hardening-unix
+      --disable unix
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  when: accounts_pam_profiles is changed or 'pam_faillock.so' not in (accounts_common_auth.content | b64decode)
+  changed_when: true
+
+- name: Create the empty group that is allowed to use su
+  ansible.builtin.group:
+    name: sugroup
+
+- name: Restrict su to that group
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/su
+    regexp: '^#?\s*auth\s+required\s+pam_wheel\.so(\s+use_uid\s+group=\S+)?\s*$'
+    line: auth       required   pam_wheel.so use_uid group=sugroup
+
+- name: Log sudo commands and expire cached sudo logins
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/50-hardening
+    content: |
+      Defaults use_pty
+      Defaults logfile="/var/log/sudo.log"
+      Defaults timestamp_timeout={{ sudo_timeout }}
+    owner: root
+    group: root
+    mode: "0440"
+    validate: visudo -cf %s
+
+- name: Set the umask and idle timeout for login shells
+  ansible.builtin.copy:
+    dest: /etc/profile.d/50-hardening.sh
+    content: |
+      umask {{ default_umask }}
+      TMOUT={{ shell_timeout }}
+      readonly TMOUT
+      export TMOUT
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Set the umask for other bash shells
+  ansible.builtin.lineinfile:
+    path: /etc/bash.bashrc
+    regexp: '^\s*umask\s'
+    line: "umask {{ default_umask }}"
+
+- name: Read the user database
+  ansible.builtin.getent:
+    database: passwd
+
+- name: Lock system accounts that have no login shell
+  ansible.builtin.user:
+    name: "{{ item.key }}"
+    password_lock: true
+  loop: "{{ ansible_facts.getent_passwd | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - item.key != 'root'
+    - item.value[5] is search('(nologin|false|sync)$')
+    - ansible_facts.getent_shadow[item.key][0] is not match('!')
+
+- name: Close home folders to other users
+  ansible.builtin.file:
+    path: "{{ item.value[4] }}"
+    mode: "0750"
+  loop: "{{ ansible_facts.getent_passwd | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - item.value[1] | int >= 1000
+    - item.value[5] is not search('(nologin|false)$')
+
+- name: Close dot files in home folders to other users
+  ansible.builtin.command:
+    argv:
+      - find
+      - "{{ item.value[4] }}"
+      - -maxdepth
+      - "1"
+      - -type
+      - f
+      - -name
+      - ".*"
+      - -perm
+      - /g+wx,o+rwx
+      - -print
+      - -exec
+      - chmod
+      - g-wx,o-rwx
+      - "{}"
+      - +
+  loop: "{{ ansible_facts.getent_passwd | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - item.value[1] | int >= 1000
+    - item.value[5] is not search('(nologin|false)$')
+  register: accounts_dot_files
+  changed_when: accounts_dot_files.stdout | length > 0

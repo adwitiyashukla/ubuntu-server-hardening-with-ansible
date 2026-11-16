@@ -1,0 +1,68 @@
+- name: Harden Ubuntu 24.04 servers
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Check that the server runs Ubuntu 24.04
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Ubuntu'
+          - ansible_facts['distribution_version'] == '24.04'
+        fail_msg: this playbook only supports Ubuntu 24.04
+        quiet: true
+
+    - name: Check the settings in group_vars/all.yml
+      ansible.builtin.assert:
+        that:
+          - admin_user is string and admin_user | length > 0
+          - ssh_group is match('^[a-z_][a-z0-9_-]*$')
+          - apt_upgrade is boolean
+          - unattended_reboot is boolean
+          - unattended_reboot_time is match('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+          - remove_packages is sequence and remove_packages is not string
+          - time_servers | length > 0
+          - banner_text | length > 0
+          - password_max_days | int >= password_min_days | int
+          - password_warn_days | int >= 1
+          - password_inactive_days | int >= 1
+          - password_min_length | int >= 8
+          - password_min_classes | int in [1, 2, 3, 4]
+          - password_remember | int >= 1
+          - faillock_deny | int >= 1
+          - faillock_unlock_time | int >= 0
+          - shell_timeout | int >= 60
+          - default_umask is match('^0[0-7][0-7]$')
+          - sudo_timeout | int >= 0
+          - ssh_log_level in ['INFO', 'VERBOSE']
+          - ssh_max_auth_tries | int >= 1
+          - ssh_max_sessions | int >= 1
+          - ssh_max_startups is match('^[0-9]+:[0-9]+:[0-9]+$')
+          - ssh_login_grace_time | int >= 1
+          - ssh_client_alive_interval | int >= 1
+          - ssh_client_alive_count_max | int >= 1
+          - ssh_ciphers | length > 0
+          - ssh_macs | length > 0
+          - ssh_kex | length > 0
+          - firewall_ssh_limit is boolean
+          - firewall_allow_tcp | map('int') | select('lt', 1) | list | length == 0
+          - firewall_allow_tcp | map('int') | select('gt', 65535) | list | length == 0
+          - sysctl_settings is mapping
+          - blocked_kernel_modules is sequence and blocked_kernel_modules is not string
+          - tmp_mount_options | difference(['nodev', 'nosuid', 'noexec']) | length == 0
+          - tmp_size is match('^[0-9]+[MG]$')
+          - grub_cmdline_extra is sequence and grub_cmdline_extra is not string
+          - journald_max_use is match('^[0-9]+[MG]$')
+          - audit_immutable is boolean
+          - aide_enabled is boolean
+          - node_exporter_port | int >= 1024
+          - node_exporter_port | int <= 65535
+        fail_msg: a setting in group_vars/all.yml is missing or out of range
+        quiet: true
+
+  roles:
+    - base
+    - accounts
+    - ssh
+    - firewall
+    - kernel
+    - monitoring
+    - audit

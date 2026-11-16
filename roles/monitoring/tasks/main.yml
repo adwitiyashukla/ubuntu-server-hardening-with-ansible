@@ -1,0 +1,35 @@
+- name: Install node_exporter
+  ansible.builtin.apt:
+    name: prometheus-node-exporter
+    install_recommends: false
+    lock_timeout: 600
+
+- name: Make node_exporter listen on localhost only
+  ansible.builtin.lineinfile:
+    path: /etc/default/prometheus-node-exporter
+    regexp: '^ARGS='
+    line: ARGS="--web.listen-address=127.0.0.1:{{ node_exporter_port }}"
+  notify: Restart node_exporter
+
+- name: Create the unit drop-in folder
+  ansible.builtin.file:
+    path: /etc/systemd/system/prometheus-node-exporter.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Sandbox the node_exporter service
+  ansible.builtin.copy:
+    src: sandbox.conf
+    dest: /etc/systemd/system/prometheus-node-exporter.service.d/sandbox.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+
+- name: Keep node_exporter running
+  ansible.builtin.systemd_service:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started

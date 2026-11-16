@@ -1,0 +1,87 @@
+- name: Keep the journal on disk and pass it on to rsyslog
+  community.general.ini_file:
+    path: /etc/systemd/journald.conf
+    section: Journal
+    option: "{{ item.key }}"
+    value: "{{ item.value }}"
+    no_extra_spaces: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { key: Storage, value: persistent }
+    - { key: Compress, value: "yes" }
+    - { key: ForwardToSyslog, value: "yes" }
+    - { key: SystemMaxUse, value: "{{ journald_max_use }}" }
+  loop_control:
+    label: "{{ item.key }}"
+  notify: Restart journald
+
+- name: Install auditd and AIDE before the setuid programs are listed
+  ansible.builtin.apt:
+    name: "{{ ['auditd'] + (aide_enabled | ternary(['aide', 'aide-common'], [])) }}"
+    install_recommends: false
+    lock_timeout: 600
+
+- name: List the setuid and setgid programs
+  ansible.builtin.command: find / -xdev -type f -perm /6000
+  register: audit_privileged
+  changed_when: false
+
+- name: Write the audit rules
+  ansible.builtin.template:
+    src: hardening.rules.j2
+    dest: /etc/audit/rules.d/99-hardening.rules
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Load audit rules
+
+- name: Keep auditd running
+  ansible.builtin.systemd_service:
+    name: auditd
+    enabled: true
+    state: started
+
+- name: Apply pending changes before the file baseline is taken
+  ansible.builtin.meta: flush_handlers
+
+- name: Build the AIDE file baseline
+  ansible.builtin.command:
+    cmd: aideinit --yes --force
+    creates: /var/lib/aide/aide.db
+  when: aide_enabled
+
+- name: Check files against the baseline every day
+  ansible.builtin.systemd_service:
+    name: dailyaidecheck.timer
+    enabled: true
+    state: started
+  when: aide_enabled
+
+- name: Close log files to other users
+  ansible.builtin.command:
+    argv:
+      - find
+      - /var/log
+      - -type
+      - f
+      - -perm
+      - /g+wx,o+rwx
+      - "!"
+      - -name
+      - "wtmp*"
+      - "!"
+      - -name
+      - "btmp*"
+      - "!"
+      - -name
+      - "lastlog*"
+      - -print
+      - -exec
+      - chmod
+      - g-wx,o-rwx
+      - "{}"
+      - +
+  register: audit_log_files
+  changed_when: audit_log_files.stdout | length > 0

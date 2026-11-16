@@ -1,0 +1,26 @@
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+HostbasedAuthentication no
+GSSAPIAuthentication no
+IgnoreRhosts yes
+PermitUserEnvironment no
+UsePAM yes
+AllowGroups {{ ssh_group }}
+MaxAuthTries {{ ssh_max_auth_tries }}
+MaxSessions {{ ssh_max_sessions }}
+MaxStartups {{ ssh_max_startups }}
+LoginGraceTime {{ ssh_login_grace_time }}
+ClientAliveInterval {{ ssh_client_alive_interval }}
+ClientAliveCountMax {{ ssh_client_alive_count_max }}
+LogLevel {{ ssh_log_level }}
+Banner /etc/issue.net
+DisableForwarding yes
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+Ciphers {{ ssh_ciphers | join(',') }}
+MACs {{ ssh_macs | join(',') }}
+KexAlgorithms {{ ssh_kex | join(',') }}

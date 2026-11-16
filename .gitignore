@@ -1,0 +1,4 @@
+.lab/
+.ansible/
+.pytest_cache/
+__pycache__/

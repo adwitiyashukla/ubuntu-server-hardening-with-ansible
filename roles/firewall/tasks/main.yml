@@ -1,0 +1,69 @@
+- name: Install ufw
+  ansible.builtin.apt:
+    name: ufw
+    lock_timeout: 600
+
+- name: Keep the nftables service off so ufw owns the rules
+  ansible.builtin.systemd_service:
+    name: nftables
+    enabled: false
+    masked: true
+    state: stopped
+
+- name: Stop ufw from turning martian packet logging back off when it starts
+  ansible.builtin.lineinfile:
+    path: /etc/ufw/sysctl.conf
+    regexp: '^#?\s*net/ipv4/conf/{{ item }}/log_martians='
+    line: "net/ipv4/conf/{{ item }}/log_martians=1"
+  loop:
+    - all
+    - default
+
+- name: Allow traffic on the loopback interface
+  community.general.ufw:
+    rule: allow
+    direction: "{{ item }}"
+    interface: lo
+  loop:
+    - in
+    - out
+
+- name: Drop loopback addresses that arrive on other interfaces
+  community.general.ufw:
+    rule: deny
+    direction: in
+    from_ip: "{{ item }}"
+  loop:
+    - 127.0.0.0/8
+    - ::1
+
+- name: Open SSH with rate limiting
+  community.general.ufw:
+    rule: "{{ firewall_ssh_limit | ternary('limit', 'allow') }}"
+    port: "22"
+    proto: tcp
+
+- name: Open the extra ports from the settings
+  community.general.ufw:
+    rule: allow
+    port: "{{ item | string }}"
+    proto: tcp
+  loop: "{{ firewall_allow_tcp }}"
+
+- name: Block incoming and routed traffic by default
+  community.general.ufw:
+    default: deny
+    direction: "{{ item }}"
+  loop:
+    - incoming
+    - routed
+
+- name: Allow outgoing traffic by default
+  community.general.ufw:
+    default: allow
+    direction: outgoing
+
+- name: Log blocked packets and turn the firewall on
+  community.general.ufw:
+    logging: low
+    state: enabled

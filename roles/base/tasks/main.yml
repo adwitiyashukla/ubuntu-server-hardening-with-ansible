@@ -1,0 +1,160 @@
+- name: Upgrade installed packages
+  ansible.builtin.apt:
+    upgrade: safe
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 600
+  when: apt_upgrade
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - apparmor
+      - apparmor-utils
+      - cron
+      - rsyslog
+      - sudo
+      - systemd-timesyncd
+      - unattended-upgrades
+    lock_timeout: 600
+
+- name: Remove packages a server does not need
+  ansible.builtin.apt:
+    name: "{{ remove_packages }}"
+    state: absent
+    purge: true
+    lock_timeout: 600
+
+- name: Turn on automatic security updates
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Set the reboot policy for automatic updates
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52hardening
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "{{ unattended_reboot | ternary('true', 'false') }}";
+      Unattended-Upgrade::Automatic-Reboot-Time "{{ unattended_reboot_time }}";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create the timesyncd drop-in folder
+  ansible.builtin.file:
+    path: /etc/systemd/timesyncd.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Set the time servers
+  ansible.builtin.copy:
+    dest: /etc/systemd/timesyncd.conf.d/50-hardening.conf
+    content: |
+      [Time]
+      NTP={{ time_servers | join(' ') }}
+      FallbackNTP={{ fallback_time_servers | join(' ') }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart timesyncd
+
+- name: Keep time sync running
+  ansible.builtin.systemd_service:
+    name: systemd-timesyncd
+    enabled: true
+    state: started
+
+- name: Keep AppArmor running
+  ansible.builtin.systemd_service:
+    name: apparmor
+    enabled: true
+    state: started
+
+- name: Keep the rsync daemon off
+  ansible.builtin.systemd_service:
+    name: rsync
+    enabled: false
+    masked: true
+    state: stopped
+
+- name: Write the login banners
+  ansible.builtin.copy:
+    dest: "{{ item }}"
+    content: "{{ banner_text }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /etc/issue
+    - /etc/issue.net
+    - /etc/motd
+
+- name: Lock down the cron folders
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/crontab, mode: "0600" }
+    - { path: /etc/cron.hourly, mode: "0700" }
+    - { path: /etc/cron.daily, mode: "0700" }
+    - { path: /etc/cron.weekly, mode: "0700" }
+    - { path: /etc/cron.monthly, mode: "0700" }
+    - { path: /etc/cron.d, mode: "0700" }
+
+- name: Let only root schedule jobs
+  ansible.builtin.copy:
+    dest: "{{ item.path }}"
+    content: "root\n"
+    owner: root
+    group: "{{ item.group }}"
+    mode: "0640"
+  loop:
+    - { path: /etc/cron.allow, group: crontab }
+    - { path: /etc/at.allow, group: root }
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Remove the cron and at deny lists
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/cron.deny
+    - /etc/at.deny
+
+- name: Look up the account files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop:
+    - { path: /etc/passwd, group: root, mode: "0644" }
+    - { path: /etc/passwd-, group: root, mode: "0644" }
+    - { path: /etc/group, group: root, mode: "0644" }
+    - { path: /etc/group-, group: root, mode: "0644" }
+    - { path: /etc/shadow, group: shadow, mode: "0640" }
+    - { path: /etc/shadow-, group: shadow, mode: "0640" }
+    - { path: /etc/gshadow, group: shadow, mode: "0640" }
+    - { path: /etc/gshadow-, group: shadow, mode: "0640" }
+    - { path: /etc/shells, group: root, mode: "0644" }
+    - { path: /etc/security/opasswd, group: root, mode: "0600" }
+  loop_control:
+    label: "{{ item.path }}"
+  register: base_account_files
+
+- name: Fix ownership and mode of the account files
+  ansible.builtin.file:
+    path: "{{ item.item.path }}"
+    owner: root
+    group: "{{ item.item.group }}"
+    mode: "{{ item.item.mode }}"
+  loop: "{{ base_account_files.results | selectattr('stat.exists') }}"
+  loop_control:
+    label: "{{ item.item.path }}"

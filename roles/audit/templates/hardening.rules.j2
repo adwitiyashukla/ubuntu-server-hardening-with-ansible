@@ -1,0 +1,43 @@
+-w /etc/sudoers -p wa -k scope
+-w /etc/sudoers.d -p wa -k scope
+-w /var/log/sudo.log -p wa -k sudo_log_file
+-w /etc/localtime -p wa -k time-change
+-w /etc/issue -p wa -k system-locale
+-w /etc/issue.net -p wa -k system-locale
+-w /etc/hosts -p wa -k system-locale
+-w /etc/hostname -p wa -k system-locale
+-w /etc/netplan -p wa -k system-locale
+-w /etc/group -p wa -k identity
+-w /etc/passwd -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+-w /etc/nsswitch.conf -p wa -k identity
+-w /etc/pam.conf -p wa -k identity
+-w /etc/pam.d -p wa -k identity
+-w /var/log/lastlog -p wa -k logins
+-w /var/run/faillock -p wa -k logins
+-w /var/run/utmp -p wa -k session
+-w /var/log/wtmp -p wa -k session
+-w /var/log/btmp -p wa -k session
+-w /etc/apparmor -p wa -k MAC-policy
+-w /etc/apparmor.d -p wa -k MAC-policy
+{% for arch in ['b64', 'b32'] %}
+-a always,exit -F arch={{ arch }} -C euid!=uid -F auid!=unset -S execve -k user_emulation
+-a always,exit -F arch={{ arch }} -S adjtimex,settimeofday,clock_settime -k time-change
+-a always,exit -F arch={{ arch }} -S sethostname,setdomainname -k system-locale
+-a always,exit -F arch={{ arch }} -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch={{ arch }} -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch={{ arch }} -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch={{ arch }} -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
+-a always,exit -F arch={{ arch }} -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
+-a always,exit -F arch={{ arch }} -S mount -F auid>=1000 -F auid!=unset -k mounts
+-a always,exit -F arch={{ arch }} -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
+-a always,exit -F arch={{ arch }} -S init_module,finit_module,delete_module -F auid>=1000 -F auid!=unset -k kernel_modules
+{% endfor %}
+{% for path in audit_privileged.stdout_lines | sort %}
+-a always,exit -F path={{ path }} -F perm=x -F auid>=1000 -F auid!=unset -k privileged
+{% endfor %}
+{% if audit_immutable %}
+-e 2
+{% endif %}

@@ -1,0 +1,16 @@
+- name: Restart journald
+  ansible.builtin.systemd_service:
+    name: systemd-journald
+    state: restarted
+
+- name: Load audit rules
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      if auditctl -s | grep -q '^enabled 2'; then
+        touch /run/reboot-required
+      else
+        augenrules --load
+      fi
+    executable: /bin/bash
+  changed_when: true

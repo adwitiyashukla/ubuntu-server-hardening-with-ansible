@@ -1,0 +1,86 @@
+- name: Write the kernel settings so they load after the vendor files
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-zz-hardening.conf
+    content: |
+      {% for key, value in sysctl_settings | dictsort %}
+      {{ key }} = {{ value }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Load kernel settings
+
+- name: Make Ubuntu's own reverse path filter setting strict too, so no file disagrees
+  ansible.builtin.lineinfile:
+    path: /etc/sysctl.d/10-network-security.conf
+    regexp: '^\s*net\.ipv4\.conf\.{{ item }}\.rp_filter\s*='
+    line: "net.ipv4.conf.{{ item }}.rp_filter=1"
+  loop:
+    - all
+    - default
+
+- name: Block kernel modules the server does not use
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/hardening.conf
+    content: |
+      {% for module in blocked_kernel_modules %}
+      install {{ module }} /bin/false
+      blacklist {{ module }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: List the loaded kernel modules
+  ansible.builtin.command: lsmod
+  register: kernel_lsmod
+  changed_when: false
+
+- name: Unload blocked modules that are loaded right now
+  ansible.builtin.command: modprobe -r {{ item }}
+  loop: "{{ blocked_kernel_modules }}"
+  when: item | replace('-', '_') in kernel_lsmod.stdout_lines | map('split') | map('first')
+  changed_when: true
+
+- name: Mount /tmp as tmpfs with safe options, with this task's own temp files kept in /var/tmp
+  ansible.posix.mount:
+    path: /tmp
+    src: tmpfs
+    fstype: tmpfs
+    opts: "{{ (['rw'] + tmp_mount_options + ['size=' ~ tmp_size]) | join(',') }}"
+    state: mounted
+  environment:
+    TMPDIR: /var/tmp
+
+- name: Mount /dev/shm with safe options
+  ansible.posix.mount:
+    path: /dev/shm
+    src: tmpfs
+    fstype: tmpfs
+    opts: "{{ (['rw'] + tmp_mount_options) | join(',') }}"
+    state: mounted
+
+- name: Turn off core dumps
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/50-hardening.conf
+    content: "* hard core 0\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the kernel boot options
+  ansible.builtin.copy:
+    dest: /etc/default/grub.d/60-hardening.cfg
+    content: |
+      GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX {{ grub_cmdline_extra | join(' ') }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Rebuild GRUB config
+
+- name: Close the GRUB config to other users
+  ansible.builtin.file:
+    path: /boot/grub/grub.cfg
+    owner: root
+    group: root
+    mode: "0600"
